@@ -42,6 +42,8 @@ let design=Object.hasOwn(themes,savedDesign)?savedDesign:"fokus";
 let sound=pref("sound","on")==="on";
 let timers=readTimers(), view=Object.hasOwn(themes,savedDesign)?"home":"design", demoRest=false;
 let draft, expanded, attempted=false, run=null, finished=null, ticker, audio, lock, requestingLock=false;
+const homeScreenAudio = navigator.standalone === true;
+let cueAudio;
 function header(){
   document.body.dataset.design=view==="design"?"fokus":design;
   const soundBtn=`<button class="quiet" data-action="sound" aria-label="Ton ${sound?"ausschalten":"einschalten"}" aria-pressed="${sound}">${icon(sound?"sound":"mute")}<span>Ton ${sound?"an":"aus"}</span></button>`;
@@ -190,15 +192,27 @@ app.addEventListener("input",e=>{
   updateEditor();
 });
 function unlockAudio(){
-  if(!sound)return;
+  if(!sound || homeScreenAudio)return;
   try{
     const Context=window.AudioContext || window.webkitAudioContext;
     if(!audio && Context)audio=new Context();
     if(audio && audio.state!=="running")audio.resume().catch(()=>{});
   }catch{/* Der visuelle Timer läuft auch ohne Audio. */}
 }
+function playHomeScreenCue(kind) {
+  // WebKit kann Web Audio in Home-Bildschirm-Apps stummschalten. Das beim
+  // Start-Tipp freigegebene Medienelement auch für spätere Phasen verwenden.
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = "playback";
+  } catch {/* Die Medienwiedergabe ist auch ohne Audio Session API möglich. */}
+  cueAudio ??= new Audio();
+  cueAudio.src = `./sounds/${kind}.wav`;
+  cueAudio.play().catch(() => {});
+}
 function signal(kind){
-  if(!sound || !audio || document.hidden)return;
+  if(!sound || document.hidden)return;
+  if(homeScreenAudio){playHomeScreenCue(kind);return;}
+  if(!audio)return;
   try{
     const tone=audio.createOscillator(), gain=audio.createGain(), now=audio.currentTime;
     const length=kind==="done"?.32:.15;
@@ -320,7 +334,10 @@ window.addEventListener("storage",event=>{
     if(view==="home")home();
   }
 });
-document.addEventListener("visibilitychange",()=>{if(run){updateRun();syncLock();}});
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)cueAudio?.pause();
+  if(run){updateRun();syncLock();}
+});
 window.addEventListener("pageshow",()=>{if(run){updateRun();syncLock();}});
 function modal(title,buttons,description=""){
   dialog.innerHTML=`<h2 id="dialog-title">${escapeHTML(title)}</h2>${description?`<p>${escapeHTML(description)}</p>`:""}<div class="dialog-actions"></div>`;
@@ -345,7 +362,15 @@ document.addEventListener("click",e=>{
   const id=button.dataset.id,action=button.dataset.action;
   const t=timers.find(item=>item.id===id);
   switch(action){
-    case "sound": sound=!sound;setPref("sound",sound?"on":"off");unlockAudio();header();bar.querySelector('[data-action="sound"]').focus({preventScroll:true});break;
+    case "sound":
+      sound=!sound;
+      setPref("sound",sound?"on":"off");
+      if(!sound)cueAudio?.pause();
+      else if(homeScreenAudio && run){
+        const phase=run.plan.at(elapsed()/1000);
+        if(phase)signal(phase.resting?"rest":"work");
+      }else unlockAudio();
+      header();bar.querySelector('[data-action="sound"]').focus({preventScroll:true});break;
     case "design": go("design");break;
     case "pick": design=button.dataset.design;gallery();app.querySelector(`[data-design="${design}"]`).focus({preventScroll:true});break;
     case "demo": demoRest=button.dataset.rest==="1";gallery();app.querySelector(`button[data-rest="${button.dataset.rest}"]`).focus({preventScroll:true});break;
@@ -372,7 +397,7 @@ document.addEventListener("click",e=>{
       changeStep(action);
       break;
     case "again":start(finished);break;
-    case "end":modal("Training beenden?",[["Zurück zum Timer","secondary"],["Beenden","danger",()=>{stop();go("home");}]],"Der aktuelle Durchlauf endet.");break;
+    case "end":modal("Training beenden?",[["Zurück zum Timer","secondary"],["Beenden","danger",()=>{cueAudio?.pause();stop();go("home");}]],"Der aktuelle Durchlauf endet.");break;
   }
 });
 go(view);
